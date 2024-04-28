@@ -45,13 +45,14 @@ pub fn game_loop() {
 
     debug!("loop starting! CPU: {}", game::cpu::get_used());
 
+    let mut source_harvester_counts: HashMap<String, u8> = HashMap::new();
     // mutably borrow the creep_targets refcell, which is holding our creep target locks
     // in the wasm heap
     CREEP_TARGETS.with(|creep_targets_refcell| {
         let mut creep_targets = creep_targets_refcell.borrow_mut();
         debug!("running creeps");
         for creep in game::creeps().values() {
-            run_creep(&creep, &mut creep_targets);
+            run_creep(&creep, &mut creep_targets, &mut source_harvester_counts);
         }
     });
 
@@ -103,12 +104,13 @@ pub fn game_loop() {
     info!("done! cpu: {}", game::cpu::get_used())
 }
 
-fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
+fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>, source_harvester_counts: &mut HashMap<String, u8>) {
     if creep.spawning() {
         return;
     }
     let name = creep.name();
     debug!("running creep {}", name);
+
 
     let target = creep_targets.entry(name);
     match target {
@@ -138,6 +140,11 @@ fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
                     if creep.store().get_free_capacity(Some(ResourceType::Energy)) > 0 =>
                 {
                     if let Some(source) = source_id.resolve() {
+                        source_harvester_counts
+                            .entry(source_id.to_string())
+                            .and_modify(|count| *count += 1)
+                            .or_insert(1);
+                        info!("soures_harvester_counts: {:?}", source_harvester_counts);
                         if creep.pos().is_near_to(source.pos()) {
                             creep.harvest(&source).unwrap_or_else(|e| {
                                 warn!("couldn't harvest: {:?}", e);
@@ -165,8 +172,25 @@ fn run_creep(creep: &Creep, creep_targets: &mut HashMap<String, CreepTarget>) {
                         break;
                     }
                 }
-            } else if let Some(source) = room.find(find::SOURCES_ACTIVE, None).first() {
-                entry.insert(CreepTarget::Harvest(source.id()));
+            } else {
+                let source_with_least_harvesters = room
+                    .find(find::SOURCES, None)
+                    .iter()
+                    .map(|source| {
+                        info!("source.id(): {:?}", source_harvester_counts.get(&source.id().to_string()).unwrap_or(&0));
+                        (
+                            source.id(),
+                            source_harvester_counts
+                                .get(&source.id().to_string())
+                                .unwrap_or(&0),
+                        )
+                    })
+                    .min_by_key(|(_, count)| *count)
+                    .map(|(id, _)| id);
+                info!("source_with_least_harvesters: {:?}", source_with_least_harvesters);
+                if let Some(source_with_least_harvesters) = source_with_least_harvesters {
+                    entry.insert(CreepTarget::Harvest(source_with_least_harvesters));
+                }
             }
         }
     }
